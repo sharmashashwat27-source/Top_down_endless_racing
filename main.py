@@ -1,9 +1,13 @@
-import pygame
-import sys
+import math
+import os
 import random
+import sys
 
+import pygame
+
+from src.coin import Coin, Gem
+from src.npc import NPC, LANES
 from src.player import Player
-from src.npc import NPC
 
 
 pygame.init()
@@ -11,28 +15,66 @@ pygame.init()
 WIDTH = 1280
 HEIGHT = 720
 
-screen = pygame.display.set_mode(
-    (WIDTH, HEIGHT)
-)
-
-pygame.display.set_caption(
-    "Endless Racing"
-)
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Endless Racing")
 
 clock = pygame.time.Clock()
 
 ROAD_WIDTH = 600
 SEGMENT_LENGTH = 30
+START_Y = 400
+
+START_LIVES = 3
+BASE_NPCS = 8
+MAX_NPCS = 22
 
 ROAD_COLOR = (55, 55, 55)
 GRASS_COLOR = (30, 125, 45)
 EDGE_COLOR = (235, 235, 235)
 LINE_COLOR = (255, 205, 35)
 
+WHITE = (255, 255, 255)
+
+SAVE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "highscore.txt"
+)
+
+FONT_HUD = pygame.font.Font(None, 32)
+FONT_SMALL = pygame.font.Font(None, 30)
+FONT_CONTROL = pygame.font.Font(None, 38)
+FONT_TITLE = pygame.font.Font(None, 72)
+FONT_BIG = pygame.font.Font(None, 90)
+FONT_POPUP = pygame.font.Font(None, 40)
+
+
+# ------------------------------------------------------------------ high score
+
+def load_high_score():
+
+    try:
+        with open(SAVE_FILE) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def save_high_score(value):
+
+    try:
+        with open(SAVE_FILE, "w") as f:
+            f.write(str(value))
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------------------------ road
+
 road = []
+road_offset = 0          # how many old segments were pruned (keeps dashes stable)
 
 road_x = 0
-road_y = 400
+road_y = 0
 
 curve = 0
 target_curve = 0
@@ -44,25 +86,13 @@ def choose_curve():
     global target_curve
     global curve_timer
 
-    direction = random.choice(
-        [-1, 1]
-    )
+    direction = random.choice([-1, 1])
 
-    strength = random.choice(
-        [
-            0.020,
-            0.025,
-            0.030,
-            0.035
-        ]
-    )
+    strength = random.choice([0.020, 0.025, 0.030, 0.035])
 
     target_curve = direction * strength
 
-    curve_timer = random.randint(
-        250,
-        450
-    )
+    curve_timer = random.randint(250, 450)
 
 
 def generate_segment():
@@ -70,891 +100,755 @@ def generate_segment():
     global road_x
     global road_y
     global curve
-    global target_curve
     global curve_timer
 
     if curve_timer <= 0:
         choose_curve()
 
-    curve += (
-        target_curve -
-        curve
-    ) * 0.025
+    curve += (target_curve - curve) * 0.025
 
-    road.append(
-        (
-            road_x,
-            road_y
-        )
-    )
+    road.append((road_x, road_y))
 
-    road_x += (
-        curve *
-        SEGMENT_LENGTH
-    )
+    road_x += curve * SEGMENT_LENGTH
 
     road_y -= SEGMENT_LENGTH
 
     curve_timer -= 1
 
 
-for _ in range(2500):
-    generate_segment()
+def init_road():
+    """Build a fresh road. It starts BEHIND the player so there is no cut-off."""
+
+    global road, road_offset
+    global road_x, road_y
+    global curve, target_curve, curve_timer
+
+    road = []
+    road_offset = 0
+
+    road_x = 0
+    road_y = START_Y + SEGMENT_LENGTH * 40
+
+    curve = 0
+    target_curve = 0
+    curve_timer = 150        # start with a short straight
+
+    for _ in range(800):
+        generate_segment()
+
+
+def prune_road():
+    """Drop segments far behind the player so the list never grows forever."""
+
+    global road_offset
+
+    limit = player.position.y + 1500
+
+    remove = 0
+
+    while remove < len(road) - 2 and road[remove][1] > limit:
+        remove += 1
+
+    if remove:
+        del road[:remove]
+        road_offset += remove
 
 
 def get_road_center(y):
+    """Interpolated road centre at world height y (segments are evenly spaced)."""
 
     if len(road) < 2:
         return 0
 
-    closest_x = road[0][0]
+    position = (road[0][1] - y) / SEGMENT_LENGTH
 
-    closest_difference = abs(
-        road[0][1] -
-        y
-    )
+    position = max(0, min(len(road) - 1.001, position))
 
-    for x, point_y in road:
+    i = int(position)
+    t = position - i
 
-        difference = abs(
-            point_y -
-            y
-        )
-
-        if difference < closest_difference:
-
-            closest_difference = difference
-            closest_x = x
-
-    return closest_x
+    return road[i][0] + (road[i + 1][0] - road[i][0]) * t
 
 
 def draw_road():
 
-    visible_points = []
+    first_y = road[0][1]
 
-    top = camera_y - 500
-
-    bottom = (
-        camera_y +
-        HEIGHT +
-        500
+    i0 = max(
+        0,
+        int((first_y - (camera_y + HEIGHT + 500)) / SEGMENT_LENGTH)
     )
 
-    for x, y in road:
+    i1 = min(
+        len(road),
+        int((first_y - (camera_y - 500)) / SEGMENT_LENGTH) + 2
+    )
 
-        if top <= y <= bottom:
+    points = road[i0:i1]
 
-            visible_points.append(
-                (
-                    x - camera_x,
-                    y - camera_y
-                )
-            )
-
-    if len(visible_points) < 2:
+    if len(points) < 2:
         return
+
+    visible = [(x - camera_x, y - camera_y) for x, y in points]
 
     half_width = ROAD_WIDTH / 2
 
     left_edge = []
     right_edge = []
 
-    for i in range(
-        len(visible_points)
-    ):
+    last = len(visible) - 1
 
-        x, y = visible_points[i]
+    for i, (x, y) in enumerate(visible):
 
-        if i == 0:
+        ax, ay = visible[max(i - 1, 0)]
+        bx, by = visible[min(i + 1, last)]
 
-            x2, y2 = visible_points[i + 1]
+        dx = bx - ax
+        dy = by - ay
 
-            dx = x2 - x
-            dy = y2 - y
-
-        elif i == len(visible_points) - 1:
-
-            x2, y2 = visible_points[i - 1]
-
-            dx = x - x2
-            dy = y - y2
-
-        else:
-
-            x1, y1 = visible_points[i - 1]
-            x2, y2 = visible_points[i + 1]
-
-            dx = x2 - x1
-            dy = y2 - y1
-
-        length = max(
-            1,
-            (dx * dx + dy * dy) ** 0.5
-        )
+        length = max(1, math.hypot(dx, dy))
 
         nx = -dy / length
         ny = dx / length
 
-        left_edge.append(
-            (
-                x + nx * half_width,
-                y + ny * half_width
-            )
-        )
+        left_edge.append((x + nx * half_width, y + ny * half_width))
+        right_edge.append((x - nx * half_width, y - ny * half_width))
 
-        right_edge.append(
-            (
-                x - nx * half_width,
-                y - ny * half_width
-            )
-        )
+    pygame.draw.polygon(screen, ROAD_COLOR, left_edge + right_edge[::-1])
 
-    pygame.draw.polygon(
-        screen,
-        ROAD_COLOR,
-        left_edge +
-        right_edge[::-1]
-    )
+    pygame.draw.lines(screen, EDGE_COLOR, False, left_edge, 6)
+    pygame.draw.lines(screen, EDGE_COLOR, False, right_edge, 6)
 
-    pygame.draw.lines(
-        screen,
-        EDGE_COLOR,
-        False,
-        left_edge,
-        6
-    )
+    for i in range(len(visible) - 1):
 
-    pygame.draw.lines(
-        screen,
-        EDGE_COLOR,
-        False,
-        right_edge,
-        6
-    )
+        if (road_offset + i0 + i) % 4 != 0:
+            continue
 
-    for i in range(
-        0,
-        len(visible_points) - 1,
-        4
-    ):
-
-        x1, y1 = visible_points[i]
-        x2, y2 = visible_points[i + 1]
+        x1, y1 = visible[i]
+        x2, y2 = visible[i + 1]
 
         pygame.draw.line(
             screen,
             LINE_COLOR,
-            (
-                int(x1),
-                int(y1)
-            ),
-            (
-                int(x2),
-                int(y2)
-            ),
+            (int(x1), int(y1)),
+            (int(x2), int(y2)),
             5
         )
 
 
-def create_npc(
-    distance,
-    lane,
-    lane_change
-):
+# --------------------------------------------------------------------- helpers
 
-    npc_y = (
-        player.position.y -
-        distance
-    )
+def distance_m():
 
-    road_center = get_road_center(
-        npc_y
-    )
+    return max(0, (START_Y - player.position.y) / 20)
+
+
+def current_score():
+
+    return int(distance_m()) + bonus_score
+
+
+def progress():
+    """0 at the start, 1 after about 5000 m. Everything that gets harder uses this."""
+
+    return min(1.0, distance_m() / 5000)
+
+
+def difficulty():
+    """NPC speed multiplier, grows slowly the further you drive."""
+
+    return 1 + 0.25 * progress()
+
+
+def add_popup(text, color=WHITE):
+
+    popups.append([text, 70, color])
+
+    del popups[:-4]
+
+
+# ------------------------------------------------------------------------- NPCs
+
+def lane_change_chance():
+
+    return 0.3 + 0.4 * progress()
+
+
+def spawn_clear(x, y, width, height, ignore=None):
+    """True if a vehicle of this size at (x, y) would not touch any other NPC."""
+
+    for other in npcs:
+
+        if other is ignore:
+            continue
+
+        if (
+            abs(other.position.x - x) < (width + other.width) / 2 + 30
+            and abs(other.position.y - y) < (height + other.height) / 2 + 140
+        ):
+            return False
+
+    return True
+
+
+def find_spawn(ignore=None):
+    """Pick a free spot ON the road ahead. Returns None if nothing is free right now."""
+
+    p = progress()
+
+    near = int(1800 - 600 * p)
+    far = int(3500 - 1000 * p)
+
+    for _ in range(30):
+
+        kind = NPC.random_kind()
+
+        spec = NPC.KINDS[kind]
+
+        y = player.position.y - random.randint(near, far)
+
+        lane = random.choice(LANES)
+
+        center = get_road_center(y)
+
+        if spawn_clear(center + lane, y, spec["w"], spec["h"], ignore):
+            return kind, center, y, lane
+
+    return None
+
+
+def create_npc(distance, lane, lane_change):
+
+    npc_y = player.position.y - distance
 
     return NPC(
-        road_center + lane,
+        get_road_center(npc_y),
         npc_y,
-        lane_change
+        lane,
+        lane_change,
+        difficulty()
     )
 
 
 def create_traffic():
 
     return [
-        create_npc(
-            250,
-            -180,
-            False
-        ),
-        create_npc(
-            500,
-            0,
-            False
-        ),
-        create_npc(
-            750,
-            180,
-            True
-        ),
-        create_npc(
-            1000,
-            -180,
-            True
-        ),
-        create_npc(
-            1250,
-            180,
-            False
-        ),
-        create_npc(
-            1500,
-            0,
-            True
-        ),
-        create_npc(
-            1750,
-            -180,
-            False
-        ),
-        create_npc(
-            2000,
-            180,
-            True
-        )
+        create_npc(250, -180, False),
+        create_npc(500, 0, False),
+        create_npc(750, 180, True),
+        create_npc(1000, -180, True),
+        create_npc(1250, 180, False),
+        create_npc(1500, 0, True),
+        create_npc(1750, -180, False),
+        create_npc(2000, 180, True)
     ]
 
 
-def npc_collision(a, b):
+def respawn_npc(npc):
 
-    return (
-        abs(
-            a.position.x -
-            b.position.x
-        ) < 38
-        and
-        abs(
-            a.position.y -
-            b.position.y
-        ) < 65
+    spot = find_spawn(npc)
+
+    if spot is None:
+        return False
+
+    kind, center, y, lane = spot
+
+    npc.respawn(
+        center,
+        y,
+        lane,
+        random.random() < lane_change_chance(),
+        difficulty(),
+        kind
+    )
+
+    return True
+
+
+def add_npc():
+
+    spot = find_spawn()
+
+    if spot is None:
+        return
+
+    kind, center, y, lane = spot
+
+    npcs.append(
+        NPC(
+            center,
+            y,
+            lane,
+            random.random() < lane_change_chance(),
+            difficulty(),
+            kind
+        )
     )
 
 
-def player_collision(
-    player,
-    npc
-):
+def player_collision(player, npc):
 
     return (
-        abs(
-            player.position.x -
-            npc.position.x
-        ) < 34
-        and
-        abs(
-            player.position.y -
-            npc.position.y
-        ) < 58
+        abs(player.position.x - npc.position.x)
+        < (player.width + npc.width) / 2 - 2
+        and abs(player.position.y - npc.position.y)
+        < (player.height + npc.height) / 2 - 10
     )
 
 
 def separate_npcs():
+    """Safety net: if two vehicles ever overlap, the one behind drops back."""
 
-    for i in range(
-        len(npcs)
-    ):
+    for i in range(len(npcs)):
 
-        for j in range(
-            i + 1,
-            len(npcs)
-        ):
+        for j in range(i + 1, len(npcs)):
 
             a = npcs[i]
             b = npcs[j]
 
-            if npc_collision(a, b):
+            min_dx = (a.width + b.width) / 2 + 4
+            min_dy = (a.height + b.height) / 2 + 6
 
-                difference = (
-                    a.position -
-                    b.position
-                )
+            if (
+                abs(a.position.x - b.position.x) >= min_dx
+                or abs(a.position.y - b.position.y) >= min_dy
+            ):
+                continue
 
-                if difference.length_squared() == 0:
+            if a.position.y > b.position.y:
+                back, front = a, b
+            else:
+                back, front = b, a
 
-                    difference = pygame.Vector2(
-                        1,
-                        0
-                    )
+            back.position.y = front.position.y + min_dy
+            back.speed = min(back.speed, front.speed)
 
-                direction = (
-                    difference.normalize()
-                )
 
-                overlap_x = (
-                    38 -
-                    abs(
-                        a.position.x -
-                        b.position.x
-                    )
-                )
+# ------------------------------------------------------------------ coins & gems
 
-                overlap_y = (
-                    65 -
-                    abs(
-                        a.position.y -
-                        b.position.y
-                    )
-                )
+def spawn_coin_line():
 
-                if overlap_x < overlap_y:
+    lane = random.choice(LANES)
 
-                    push = pygame.Vector2(
-                        direction.x,
-                        0
-                    )
+    start = player.position.y - random.randint(1500, 3000)
 
-                    a.position += (
-                        push *
-                        (overlap_x / 2)
-                    )
+    for i in range(random.randint(4, 7)):
 
-                    b.position -= (
-                        push *
-                        (overlap_x / 2)
-                    )
+        y = start - i * 70
 
-                else:
+        coins.append(Coin(get_road_center(y) + lane, y))
 
-                    if (
-                        a.position.y <
-                        b.position.y
-                    ):
 
-                        a.speed = min(
-                            a.speed,
-                            b.speed
-                        )
+def spawn_gem():
 
-                    else:
+    y = player.position.y - random.randint(1500, 3000)
 
-                        b.speed = min(
-                            b.speed,
-                            a.speed
-                        )
+    gems.append(Gem(get_road_center(y) + random.choice(LANES), y))
 
+
+# ------------------------------------------------------------------------ state
 
 def reset_game():
 
-    global player
-    global npcs
-    global camera_x
-    global camera_y
+    global player, npcs, coins, gems, popups
+    global camera_x, camera_y
+    global lives, bonus_score, coin_count, gem_count
+    global game_over, paused, new_best
 
     player = Player()
 
-    camera_x = 0
+    init_road()
 
-    camera_y = (
-        player.position.y -
-        500
-    )
+    camera_x = 0
+    camera_y = player.position.y - 500
 
     npcs = create_traffic()
+    coins = []
+    gems = []
+    popups = []
+
+    lives = START_LIVES
+    bonus_score = 0
+    coin_count = 0
+    gem_count = 0
+
+    game_over = False
+    paused = False
+    new_best = False
 
 
-player = Player()
+high_score = load_high_score()
 
-camera_x = 0
-
-camera_y = (
-    player.position.y -
-    500
-)
-
-npcs = create_traffic()
-
-game_over = False
+reset_game()
 
 controls_start_time = pygame.time.get_ticks()
-
 controls_duration = 5000
-
 show_controls = True
 
-close_button = pygame.Rect(
-    WIDTH // 2 - 100,
-    550,
-    200,
-    55
-)
+close_button = pygame.Rect(WIDTH // 2 - 100, 590, 200, 55)
+
+frame = 0
+
+
+# ---------------------------------------------------------------------- drawing
+
+def dim(alpha):
+
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, alpha))
+    screen.blit(overlay, (0, 0))
+
+
+def draw_centered(text, font, y, color=WHITE):
+
+    surface = font.render(text, True, color)
+    screen.blit(surface, surface.get_rect(center=(WIDTH // 2, y)))
+
+
+def draw_heart(x, y, color):
+
+    pygame.draw.circle(screen, color, (x - 6, y - 3), 7)
+    pygame.draw.circle(screen, color, (x + 6, y - 3), 7)
+    pygame.draw.polygon(screen, color, [(x - 13, y), (x + 13, y), (x, y + 14)])
+
+
+def draw_hud():
+
+    speed = abs(player.velocity.y)
+
+    kmh = int(speed * 10.8)
+
+    screen.blit(FONT_HUD.render(f"SPEED {kmh} KM/H", True, WHITE), (30, 25))
+    screen.blit(FONT_HUD.render(f"SCORE {current_score()}", True, WHITE), (30, 55))
+    screen.blit(
+        FONT_HUD.render(f"BEST {max(high_score, current_score())}", True, (255, 220, 120)),
+        (30, 85)
+    )
+    screen.blit(
+        FONT_HUD.render(f"COINS {coin_count}", True, (255, 160, 40)),
+        (30, 115)
+    )
+    screen.blit(
+        FONT_HUD.render(f"GEMS {gem_count}", True, (255, 130, 235)),
+        (30, 145)
+    )
+
+    # lives
+    for i in range(START_LIVES):
+
+        color = (225, 50, 60) if i < lives else (70, 70, 70)
+
+        draw_heart(WIDTH - 40 - i * 36, 40, color)
+
+    # nitro bar
+    bar = pygame.Rect(30, HEIGHT - 50, 220, 18)
+
+    pygame.draw.rect(screen, (20, 20, 20), bar, border_radius=6)
+
+    fill = bar.copy()
+    fill.width = int(bar.width * player.nitro / player.max_nitro)
+
+    fill_color = (120, 120, 120) if player.nitro_locked else (255, 140, 30)
+
+    if fill.width > 0:
+        pygame.draw.rect(screen, fill_color, fill, border_radius=6)
+
+    pygame.draw.rect(screen, WHITE, bar, 2, border_radius=6)
+
+    screen.blit(FONT_SMALL.render("NITRO (SHIFT)", True, WHITE), (30, HEIGHT - 78))
+
+    # popups
+    for i, (text, timer, color) in enumerate(popups):
+
+        surface = FONT_POPUP.render(text, True, color)
+        surface.set_alpha(min(255, timer * 8))
+
+        screen.blit(surface, surface.get_rect(center=(WIDTH // 2, 120 + i * 38)))
+
+
+def draw_controls():
+
+    dim(170)
+
+    draw_centered("CONTROLS", FONT_TITLE, 110)
+
+    lines = [
+        "W / UP       Accelerate",
+        "S / DOWN     Brake / Reverse",
+        "A / LEFT     Move Left",
+        "D / RIGHT    Move Right",
+        "SHIFT        Nitro Boost",
+        "P            Pause"
+    ]
+
+    for i, line in enumerate(lines):
+        draw_centered(line, FONT_CONTROL, 190 + i * 50)
+
+    draw_centered("R = Restart     Q / ESC = Quit", FONT_SMALL, 505)
+    draw_centered("Grab coins, dodge traffic, you have 3 lives", FONT_SMALL, 540)
+
+    pygame.draw.rect(screen, (190, 45, 45), close_button, border_radius=8)
+
+    close_text = FONT_HUD.render("CLOSE", True, WHITE)
+    screen.blit(close_text, close_text.get_rect(center=close_button.center))
+
+
+def draw_game_over():
+
+    dim(180)
+
+    draw_centered("GAME OVER", FONT_BIG, HEIGHT // 2 - 90)
+    draw_centered(f"SCORE {current_score()}", FONT_CONTROL, HEIGHT // 2 - 20)
+
+    if new_best:
+        draw_centered("NEW BEST!", FONT_CONTROL, HEIGHT // 2 + 20, (255, 220, 120))
+    else:
+        draw_centered(f"BEST {high_score}", FONT_CONTROL, HEIGHT // 2 + 20)
+
+    draw_centered("R = RETRY     Q / ESC = QUIT", FONT_CONTROL, HEIGHT // 2 + 90)
+
+
+def draw_pause():
+
+    dim(140)
+
+    draw_centered("PAUSED", FONT_BIG, HEIGHT // 2 - 20)
+    draw_centered("P = RESUME", FONT_CONTROL, HEIGHT // 2 + 50)
+
+
+# -------------------------------------------------------------------- main loop
 
 running = True
-
 
 while running:
 
     for event in pygame.event.get():
 
         if event.type == pygame.QUIT:
-
             running = False
 
         if event.type == pygame.MOUSEBUTTONDOWN:
 
-            if (
-                show_controls
-                and
-                close_button.collidepoint(
-                    event.pos
-                )
-            ):
-
+            if show_controls and close_button.collidepoint(event.pos):
                 show_controls = False
 
         if event.type == pygame.KEYDOWN:
 
-            if event.key == pygame.K_q:
-
-                running = False
-
-            elif event.key == pygame.K_ESCAPE:
-
+            if event.key in (pygame.K_q, pygame.K_ESCAPE):
                 running = False
 
             elif event.key == pygame.K_r:
-
                 reset_game()
 
-                game_over = False
+            elif event.key == pygame.K_p:
 
+                if not game_over and not show_controls:
+                    paused = not paused
 
-    if not game_over:
+            elif event.key in (pygame.K_SPACE, pygame.K_RETURN):
+
+                show_controls = False
+
+    if (
+        show_controls
+        and pygame.time.get_ticks() - controls_start_time >= controls_duration
+    ):
+        show_controls = False
+
+    playing = not (game_over or paused or show_controls)
+
+    if playing:
+
+        frame += 1
 
         player.update()
 
-        while (
-            road[-1][1] >
-            player.position.y -
-            20000
-        ):
+        prune_road()
 
+        while road[-1][1] > player.position.y - 20000:
             generate_segment()
 
+        # ---- NPCs
         for npc in npcs:
-
-            npc_center = get_road_center(
-                npc.position.y
-            )
-
-            npc.update(
-                npc_center,
-                npcs
-            )
+            npc.update(get_road_center(npc.position.y), npcs)
 
         separate_npcs()
+
+        speed = abs(player.velocity.y)
 
         for npc in npcs:
 
             if (
-                npc.position.y >
-                player.position.y +
-                1000
+                npc.position.y > player.position.y + 1000
+                or npc.position.y < player.position.y - 5000
             ):
+                respawn_npc(npc)
+                continue
 
-                new_distance = random.randint(
-                    1800,
-                    3500
-                )
+            # near miss bonus: you overtook a car that was close but not touching
+            if not npc.passed and npc.position.y > player.position.y:
 
-                npc_y = (
-                    player.position.y -
-                    new_distance
-                )
+                npc.passed = True
 
-                road_center = get_road_center(
-                    npc_y
-                )
+                gap = abs(npc.position.x - player.position.x)
 
-                lane = random.choice(
-                    [
-                        -180,
-                        0,
-                        180
-                    ]
-                )
+                if 34 <= gap < 75 and speed > 6:
 
-                npc.position = pygame.Vector2(
-                    road_center + lane,
-                    npc_y
-                )
+                    bonus_score += 25
+                    add_popup("NEAR MISS +25", (120, 220, 255))
 
-                npc.target_x = (
-                    road_center + lane
-                )
+        # more and more traffic the further you go
+        target_npcs = BASE_NPCS + int(progress() * (MAX_NPCS - BASE_NPCS))
 
-                npc.lane_change = random.choice(
-                    [
-                        False,
-                        False,
-                        True
-                    ]
-                )
+        if len(npcs) < target_npcs:
+            add_npc()
 
-                npc.speed = random.uniform(
-                    6,
-                    10
-                )
+        # ---- coins
+        if len(coins) < 10:
+            spawn_coin_line()
 
-        for npc in npcs:
+        remaining = []
 
-            if player_collision(
-                player,
-                npc
+        for coin in coins:
+
+            if coin.position.y > player.position.y + 800:
+                continue
+
+            if (
+                abs(coin.position.x - player.position.x) < 32
+                and abs(coin.position.y - player.position.y) < 50
             ):
+                coin_count += 1
+                bonus_score += 50
+                continue
 
-                game_over = True
+            remaining.append(coin)
 
-                break
+        coins = remaining
 
-        road_center = get_road_center(
-            player.position.y
-        )
+        # ---- gems
+        remaining_gems = []
 
-        if (
-            abs(
-                player.position.x -
-                road_center
-            ) >
-            ROAD_WIDTH / 2
-        ):
+        for gem in gems:
 
+            if gem.position.y > player.position.y + 800:
+                continue
+
+            if (
+                abs(gem.position.x - player.position.x) < 34
+                and abs(gem.position.y - player.position.y) < 50
+            ):
+                gem_count += 1
+                bonus_score += Gem.VALUE
+                add_popup(f"GEM +{Gem.VALUE}", (255, 130, 235))
+                continue
+
+            remaining_gems.append(gem)
+
+        gems = remaining_gems
+
+        if not gems and random.random() < 0.002:
+            spawn_gem()
+
+        # ---- crashes
+        if player.invincible <= 0:
+
+            for npc in npcs:
+
+                if player_collision(player, npc):
+
+                    lives -= 1
+
+                    player.hit()
+                    respawn_npc(npc)
+
+                    if lives <= 0:
+
+                        game_over = True
+
+                        score = current_score()
+
+                        if score > high_score:
+                            high_score = score
+                            new_best = True
+                            save_high_score(high_score)
+
+                    else:
+                        add_popup("CRASH!", (255, 90, 90))
+
+                    break
+
+        # ---- off-road slowdown
+        if abs(player.position.x - get_road_center(player.position.y)) > ROAD_WIDTH / 2:
             player.velocity *= 0.97
 
-        target_camera_x = (
-            player.position.x -
-            WIDTH / 2
-        )
+        # ---- camera
+        target_camera_x = player.position.x - WIDTH / 2
+        target_camera_y = player.position.y - 500
 
-        target_camera_y = (
-            player.position.y -
-            500
-        )
+        camera_x += (target_camera_x - camera_x) * 0.08
+        camera_y += (target_camera_y - camera_y) * 0.08
 
-        camera_x += (
-            target_camera_x -
-            camera_x
-        ) * 0.08
+        # ---- popups
+        for popup in popups:
+            popup[1] -= 1
 
-        camera_y += (
-            target_camera_y -
-            camera_y
-        ) * 0.08
+        popups = [p for p in popups if p[1] > 0]
 
-
-    screen.fill(
-        GRASS_COLOR
-    )
+    # ------------------------------------------------------------------- draw
+    screen.fill(GRASS_COLOR)
 
     draw_road()
 
+    for coin in coins:
+
+        pos = pygame.Vector2(
+            coin.position.x - camera_x,
+            coin.position.y - camera_y
+        )
+
+        if -50 < pos.y < HEIGHT + 50:
+            coin.draw(screen, pos, frame)
+
+    for gem in gems:
+
+        pos = pygame.Vector2(
+            gem.position.x - camera_x,
+            gem.position.y - camera_y
+        )
+
+        if -50 < pos.y < HEIGHT + 50:
+            gem.draw(screen, pos, frame)
 
     for npc in npcs:
 
-        npc_screen_position = pygame.Vector2(
-            npc.position.x -
-            camera_x,
-            npc.position.y -
-            camera_y
+        pos = pygame.Vector2(
+            npc.position.x - camera_x,
+            npc.position.y - camera_y
         )
 
-        if (
-            -100 <
-            npc_screen_position.x <
-            WIDTH + 100
-            and
-            -100 <
-            npc_screen_position.y <
-            HEIGHT + 100
-        ):
-
-            npc.draw(
-                screen,
-                npc_screen_position
-            )
-
-
-    player_position = pygame.Vector2(
-        player.position.x -
-        camera_x,
-        player.position.y -
-        camera_y
-    )
+        if -150 < pos.x < WIDTH + 150 and -150 < pos.y < HEIGHT + 150:
+            npc.draw(screen, pos)
 
     player.draw(
         screen,
-        player_position
+        pygame.Vector2(
+            player.position.x - camera_x,
+            player.position.y - camera_y
+        )
     )
-
 
     if not game_over:
+        draw_hud()
 
-        forward = pygame.Vector2(
-            0,
-            -1
-        )
+    if show_controls:
+        draw_controls()
 
-        speed = abs(
-            player.velocity.dot(
-                forward
-            )
-        )
-
-        font = pygame.font.Font(
-            None,
-            32
-        )
-
-        speed_text = font.render(
-            f"SPEED {int(speed)}",
-            True,
-            (255, 255, 255)
-        )
-
-        screen.blit(
-            speed_text,
-            (30, 25)
-        )
-
-
-    current_time = pygame.time.get_ticks()
-
-    controls_elapsed = (
-        current_time -
-        controls_start_time
-    )
-
-
-    if (
-        show_controls
-        and
-        controls_elapsed < controls_duration
-    ):
-
-        overlay = pygame.Surface(
-            (
-                WIDTH,
-                HEIGHT
-            ),
-            pygame.SRCALPHA
-        )
-
-        overlay.fill(
-            (0, 0, 0, 170)
-        )
-
-        screen.blit(
-            overlay,
-            (0, 0)
-        )
-
-        title_font = pygame.font.Font(
-            None,
-            72
-        )
-
-        control_font = pygame.font.Font(
-            None,
-            38
-        )
-
-        small_font = pygame.font.Font(
-            None,
-            30
-        )
-
-        title = title_font.render(
-            "CONTROLS",
-            True,
-            (255, 255, 255)
-        )
-
-        controls_1 = control_font.render(
-            "W / UP       Accelerate",
-            True,
-            (255, 255, 255)
-        )
-
-        controls_2 = control_font.render(
-            "S / DOWN     Brake / Reverse",
-            True,
-            (255, 255, 255)
-        )
-
-        controls_3 = control_font.render(
-            "A / LEFT     Move Left",
-            True,
-            (255, 255, 255)
-        )
-
-        controls_4 = control_font.render(
-            "D / RIGHT    Move Right",
-            True,
-            (255, 255, 255)
-        )
-
-        controls_5 = small_font.render(
-            "R = Restart     Q / ESC = Quit",
-            True,
-            (255, 255, 255)
-        )
-
-        screen.blit(
-            title,
-            title.get_rect(
-                center=(
-                    WIDTH // 2,
-                    170
-                )
-            )
-        )
-
-        screen.blit(
-            controls_1,
-            controls_1.get_rect(
-                center=(
-                    WIDTH // 2,
-                    270
-                )
-            )
-        )
-
-        screen.blit(
-            controls_2,
-            controls_2.get_rect(
-                center=(
-                    WIDTH // 2,
-                    325
-                )
-            )
-        )
-
-        screen.blit(
-            controls_3,
-            controls_3.get_rect(
-                center=(
-                    WIDTH // 2,
-                    380
-                )
-            )
-        )
-
-        screen.blit(
-            controls_4,
-            controls_4.get_rect(
-                center=(
-                    WIDTH // 2,
-                    435
-                )
-            )
-        )
-
-        screen.blit(
-            controls_5,
-            controls_5.get_rect(
-                center=(
-                    WIDTH // 2,
-                    495
-                )
-            )
-        )
-
-        pygame.draw.rect(
-            screen,
-            (190, 45, 45),
-            close_button,
-            border_radius=8
-        )
-
-        close_font = pygame.font.Font(
-            None,
-            32
-        )
-
-        close_text = close_font.render(
-            "CLOSE",
-            True,
-            (255, 255, 255)
-        )
-
-        screen.blit(
-            close_text,
-            close_text.get_rect(
-                center=close_button.center
-            )
-        )
-
+    if paused:
+        draw_pause()
 
     if game_over:
-
-        overlay = pygame.Surface(
-            (
-                WIDTH,
-                HEIGHT
-            ),
-            pygame.SRCALPHA
-        )
-
-        overlay.fill(
-            (0, 0, 0, 180)
-        )
-
-        screen.blit(
-            overlay,
-            (0, 0)
-        )
-
-        game_over_font = pygame.font.Font(
-            None,
-            90
-        )
-
-        instruction_font = pygame.font.Font(
-            None,
-            38
-        )
-
-        game_over_text = game_over_font.render(
-            "GAME OVER",
-            True,
-            (255, 255, 255)
-        )
-
-        instruction_text = instruction_font.render(
-            "R = RETRY     Q / ESC = QUIT",
-            True,
-            (255, 255, 255)
-        )
-
-        screen.blit(
-            game_over_text,
-            game_over_text.get_rect(
-                center=(
-                    WIDTH // 2,
-                    HEIGHT // 2 - 50
-                )
-            )
-        )
-
-        screen.blit(
-            instruction_text,
-            instruction_text.get_rect(
-                center=(
-                    WIDTH // 2,
-                    HEIGHT // 2 + 50
-                )
-            )
-        )
-
+        draw_game_over()
 
     pygame.display.flip()
 
