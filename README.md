@@ -1,19 +1,15 @@
-# Top_down_endless_racing
-# Endless Racing
-
-Made this in around 4 hours, so it’s definitely not perfect, but I’m pretty happy with it.
-
-It’s a simple Pygame racing game with random roads, sharp curves, NPC traffic, collisions, and basic controls.
-
-### Technical stuff
-
-* Built with **Python + Pygame**
-* Procedurally generated endless road
-* Dynamic curves and camera following
-* Separate player and NPC classes
-* NPCs have different driving behaviours, including lane changing
-* Collision detection and NPC separation
-* Arcade-style steering, acceleration, braking and reversing
-* Restart and quit handling
-
-There’s definitely a lot I’d improve, but considering Stardance might end soon, I’m happy with what I managed to build in 4 hours.
+Endless Racing
+Top-down endless road game in Pygame. The road curves on its own. You stay on it by sliding left and right in the lane.
+Run
+pip install pygame
+python main.py
+Run it from this folder so from src.player import Player works.
+Controls
+W / Up — Accelerate
+S / Down — Brake, then reverse
+A / Left — Slide left in the lane
+D / Right — Slide right in the lane
+The car stays lined up with the road. Steering only shifts you across the lane and leans the car a little. Leaving the asphalt slows you down.
+Files
+main.py — window, road generation, camera, drawing
+src/player.py — arcade car (speed, lane offset, lean)
