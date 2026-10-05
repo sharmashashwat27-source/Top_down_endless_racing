@@ -1,7 +1,13 @@
+import random
+
 import pygame
+
+from src.car_sprite import get_car_surface
 
 
 class Player:
+
+    BODY_COLOR = (210, 40, 40)
 
     def __init__(self):
 
@@ -27,6 +33,25 @@ class Player:
 
         self.drag = 0.985
 
+        # --- nitro ---
+        self.max_nitro = 100.0
+        self.nitro = 100.0
+        self.nitro_drain = 0.6
+        self.nitro_regen = 0.15
+        self.nitro_unlock_level = 25.0
+        self.nitro_locked = False
+        self.boosting = False
+        self.boost_acceleration = 0.45
+        self.boost_max_speed = 30
+
+        # --- crash recovery ---
+        self.invincible = 0
+
+    def hit(self):
+        """Called by the game when the player crashes into traffic."""
+
+        self.velocity *= 0.4
+        self.invincible = 120
 
     def update(self):
 
@@ -38,48 +63,57 @@ class Player:
 
         if keys[pygame.K_w] or keys[pygame.K_UP]:
 
-            self.velocity += (
-                forward *
-                self.acceleration
-            )
+            self.velocity += forward * self.acceleration
 
         if keys[pygame.K_s] or keys[pygame.K_DOWN]:
 
             if forward_speed > 0.5:
 
-                self.velocity -= (
-                    forward *
-                    self.brake_force
-                )
+                self.velocity -= forward * self.brake_force
 
             else:
 
-                self.velocity -= (
-                    forward *
-                    self.reverse_acceleration
-                )
+                self.velocity -= forward * self.reverse_acceleration
+
+        # ---- nitro ----
+        wants_boost = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+
+        if self.nitro_locked and self.nitro >= self.nitro_unlock_level:
+            self.nitro_locked = False
+
+        self.boosting = (
+            wants_boost
+            and not self.nitro_locked
+            and self.nitro > 0
+        )
+
+        if self.boosting:
+
+            self.velocity += forward * self.boost_acceleration
+            self.nitro = max(0, self.nitro - self.nitro_drain)
+
+            if self.nitro <= 0:
+                self.nitro_locked = True
+
+        else:
+
+            self.nitro = min(self.max_nitro, self.nitro + self.nitro_regen)
 
         forward_speed = self.velocity.dot(forward)
 
-        if forward_speed > self.max_speed:
+        cap = self.boost_max_speed if self.boosting else self.max_speed
 
-            self.velocity -= (
-                forward *
-                (
-                    forward_speed -
-                    self.max_speed
-                )
-            )
+        if forward_speed > cap:
+
+            # ease back down instead of snapping when nitro ends
+            excess = forward_speed - cap
+            ease = 1.0 if self.boosting else 0.08
+
+            self.velocity -= forward * (excess * ease)
 
         if forward_speed < -self.max_reverse_speed:
 
-            self.velocity -= (
-                forward *
-                (
-                    forward_speed +
-                    self.max_reverse_speed
-                )
-            )
+            self.velocity -= forward * (forward_speed + self.max_reverse_speed)
 
         steering = 0
 
@@ -93,20 +127,11 @@ class Player:
 
         if steering != 0:
 
-            self.position.x += (
-                steering *
-                self.lane_speed
-            )
+            self.position.x += steering * self.lane_speed
 
-        target_lean = (
-            steering *
-            self.max_lean
-        )
+        target_lean = steering * self.max_lean
 
-        self.visual_angle += (
-            target_lean -
-            self.visual_angle
-        ) * self.lean_speed
+        self.visual_angle += (target_lean - self.visual_angle) * self.lean_speed
 
         self.velocity.y *= self.drag
 
@@ -116,166 +141,39 @@ class Player:
 
             self.velocity.y = 0
 
+        if self.invincible > 0:
 
-    def draw(
-        self,
-        screen,
-        screen_position
-    ):
+            self.invincible -= 1
 
-        car_width = 36
-        car_height = 68
+    def draw(self, screen, screen_position):
 
-        car = pygame.Surface(
-            (
-                car_width,
-                car_height
-            ),
-            pygame.SRCALPHA
-        )
+        x = int(screen_position.x)
+        y = int(screen_position.y)
 
-        pygame.draw.rect(
-            car,
-            (25, 25, 25),
-            (
-                3,
-                2,
-                30,
-                64
-            ),
-            border_radius=9
-        )
+        if self.boosting:
 
-        pygame.draw.rect(
-            car,
-            (210, 40, 40),
-            (
-                5,
-                4,
-                26,
-                60
-            ),
-            border_radius=7
-        )
+            length = random.randint(18, 34)
 
-        pygame.draw.polygon(
-            car,
-            (245, 245, 245),
-            [
-                (18, 5),
-                (9, 16),
-                (27, 16)
-            ]
-        )
-
-        pygame.draw.polygon(
-            car,
-            (55, 90, 140),
-            [
-                (9, 19),
-                (27, 19),
-                (25, 32),
-                (11, 32)
-            ]
-        )
-
-        pygame.draw.rect(
-            car,
-            (30, 50, 80),
-            (
-                11,
-                35,
-                14,
-                13
-            ),
-            border_radius=3
-        )
-
-        pygame.draw.rect(
-            car,
-            (255, 220, 120),
-            (
-                8,
-                6,
-                5,
-                7
-            ),
-            border_radius=2
-        )
-
-        pygame.draw.rect(
-            car,
-            (255, 220, 120),
-            (
-                23,
-                6,
-                5,
-                7
-            ),
-            border_radius=2
-        )
-
-        pygame.draw.rect(
-            car,
-            (15, 15, 15),
-            (
-                0,
-                17,
-                6,
-                14
-            ),
-            border_radius=2
-        )
-
-        pygame.draw.rect(
-            car,
-            (15, 15, 15),
-            (
-                30,
-                17,
-                6,
-                14
-            ),
-            border_radius=2
-        )
-
-        pygame.draw.rect(
-            car,
-            (15, 15, 15),
-            (
-                0,
-                45,
-                6,
-                14
-            ),
-            border_radius=2
-        )
-
-        pygame.draw.rect(
-            car,
-            (15, 15, 15),
-            (
-                30,
-                45,
-                6,
-                14
-            ),
-            border_radius=2
-        )
-
-        rotated = pygame.transform.rotate(
-            car,
-            -self.visual_angle
-        )
-
-        rect = rotated.get_rect(
-            center=(
-                int(screen_position.x),
-                int(screen_position.y)
+            pygame.draw.polygon(
+                screen,
+                (255, 120, 30),
+                [(x - 9, y + 32), (x + 9, y + 32), (x, y + 32 + length)]
             )
-        )
 
-        screen.blit(
-            rotated,
-            rect
-        )
+            pygame.draw.polygon(
+                screen,
+                (255, 230, 120),
+                [(x - 4, y + 32), (x + 4, y + 32), (x, y + 32 + length // 2)]
+            )
+
+        # blink while invincible
+        if self.invincible > 0 and (self.invincible // 6) % 2 == 0:
+            return
+
+        car = get_car_surface(self.BODY_COLOR)
+
+        rotated = pygame.transform.rotate(car, -self.visual_angle)
+
+        rect = rotated.get_rect(center=(x, y))
+
+        screen.blit(rotated, rect)
